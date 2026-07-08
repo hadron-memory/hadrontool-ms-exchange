@@ -24,6 +24,13 @@ npm run db:test-setup # one-time: schema into hadrontool_ms_exchange_test
 Local DBs: `hadrontool_ms_exchange` (dev, via `.env`), `hadrontool_ms_exchange_test`
 (pinned by vitest.config.ts — tests never touch dev data).
 
+**Prisma 7** (engine-less; differs from hadron-server's Prisma 6): the CLI
+connection URL lives in `prisma.config.ts` (NOT in the schema datasource
+block); the runtime client connects through `@prisma/adapter-pg` (src/db.ts);
+the generated client is TypeScript under `src/generated/prisma/` (gitignored —
+`prisma generate` runs in typecheck/pretest/build); `db push` no longer
+auto-generates.
+
 ## Structure
 
 - `src/ops/` — the provider-neutral operation registry (spec 002 names + typed errors);
