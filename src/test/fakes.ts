@@ -3,11 +3,20 @@
  * fixture GraphMessage builder. Route tests run the real Express app + real
  * test DB over these fakes — only Microsoft is simulated.
  */
+import type { Db } from '../db.js';
 import type {
   GraphCallResult,
   GraphMessage,
   MsGraphProvider,
 } from '../providers/msgraph/types.js';
+
+/** Wipe every table in FK-safe order — the one cleanup list all test files share. */
+export async function resetDb(db: Db): Promise<void> {
+  await db.processedNotification.deleteMany();
+  await db.idempotencyRecord.deleteMany();
+  await db.subscription.deleteMany();
+  await db.connection.deleteMany();
+}
 
 /** Build a plausible Graph message fixture. */
 export function graphMessage(overrides: Partial<GraphMessage> = {}): GraphMessage {
@@ -36,6 +45,8 @@ export interface FakeProviderOptions {
   rotateTo?: string;
   /** When set, the named methods throw this error. */
   failWith?: { methods: string[]; error: unknown };
+  /** Simulate a grant without offline_access: exchangeCode omits refresh_token. */
+  omitRefreshToken?: boolean;
 }
 
 /**
@@ -62,7 +73,7 @@ export function fakeProvider(options: FakeProviderOptions = {}): MsGraphProvider
       if (options.failWith?.methods.includes('exchangeCode')) throw options.failWith.error;
       return {
         access_token: 'at-1',
-        refresh_token: 'rt-fresh',
+        refresh_token: (options.omitRefreshToken ? undefined : 'rt-fresh') as string,
         // header.payload.signature — payload carries personal-account claims
         id_token: `x.${Buffer.from(JSON.stringify({ preferred_username: 'personal@outlook.com', name: 'Personal User' })).toString('base64url')}.y`,
         expires_in: 3600,

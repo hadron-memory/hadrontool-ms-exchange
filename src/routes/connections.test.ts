@@ -3,16 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { decryptToken, encryptToken } from '../crypto.js';
 import { db } from '../db.js';
-import { fakeProvider } from '../test/fakes.js';
+import { fakeProvider, resetDb } from '../test/fakes.js';
 
 const AUTH = { Authorization: 'Bearer test-tool-token' };
 
-beforeEach(async () => {
-  await db.processedNotification.deleteMany();
-  await db.idempotencyRecord.deleteMany();
-  await db.subscription.deleteMany();
-  await db.connection.deleteMany();
-});
+beforeEach(() => resetDb(db));
 
 describe('/connections', () => {
   it('creates a connection from an OAuth code, using ID-token claims for a personal account', async () => {
@@ -51,6 +46,18 @@ describe('/connections', () => {
     expect(res.status).toBe(201);
     const row = await db.connection.findUniqueOrThrow({ where: { id: res.body.id } });
     expect(decryptToken(row.refreshTokenEnc)).toBe('rt-migrated');
+  });
+
+  it('returns a typed error when Microsoft omits the refresh token (offline_access not granted)', async () => {
+    const app = createApp(db, fakeProvider({ omitRefreshToken: true }), async () => {});
+    const res = await request(app)
+      .post('/connections')
+      .set(AUTH)
+      .send({ code: 'auth-code-1', redirectUri: 'https://core.example/cb' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+    expect(res.body.reason).toContain('offline_access');
+    expect(await db.connection.count()).toBe(0);
   });
 
   it('rejects a create with neither code nor refreshToken', async () => {
@@ -101,6 +108,30 @@ describe('/connections', () => {
       where: { connectionId_folder: { connectionId: connection.id, folder: 'inbox' } },
     });
     expect(row.graphSubscriptionId).toBeTruthy();
+  });
+
+  it('deletes the superseded Graph subscription when re-subscribing the same folder', async () => {
+    const connection = await db.connection.create({
+      data: { mailboxEmail: 'a@b.c', refreshTokenEnc: encryptToken('rt') },
+    });
+    const provider = fakeProvider();
+    const app = createApp(db, provider, async () => {});
+
+    await request(app).post(`/connections/${connection.id}/subscriptions`).set(AUTH).send({ folder: 'inbox' }).expect(201);
+    const first = await db.subscription.findUniqueOrThrow({
+      where: { connectionId_folder: { connectionId: connection.id, folder: 'inbox' } },
+    });
+
+    // Core retries a subscribe that actually succeeded — the old Graph
+    // subscription must be torn down, not orphaned against the quota.
+    await request(app).post(`/connections/${connection.id}/subscriptions`).set(AUTH).send({ folder: 'inbox' }).expect(201);
+    expect(
+      provider.calls.some(([m, args]) => m === 'deleteSubscription' && args[1] === first.graphSubscriptionId),
+    ).toBe(true);
+    const second = await db.subscription.findUniqueOrThrow({
+      where: { connectionId_folder: { connectionId: connection.id, folder: 'inbox' } },
+    });
+    expect(second.graphSubscriptionId).not.toBe(first.graphSubscriptionId);
   });
 
   it('rejects unsupported folders', async () => {

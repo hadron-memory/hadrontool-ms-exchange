@@ -13,6 +13,8 @@ export default defineConfig({
       WEBHOOK_CLIENT_STATE_SECRET: 'test-client-state-secret',
       MS_EXCHANGE_TOOL_TOKEN: 'test-tool-token',
       WEBHOOK_BASE_URL: 'https://tool.example',
+      MICROSOFT_CLIENT_ID: 'test-client-id',
+      MICROSOFT_CLIENT_SECRET: 'test-client-secret',
     },
     // DB-backed route tests share tables; run files sequentially.
     fileParallelism: false,

@@ -7,8 +7,19 @@
  * format conversion. The KEY is this tool's own TOKEN_ENCRYPTION_KEY — core's
  * key never ships here.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'crypto';
 import { config } from './config.js';
+
+/**
+ * Constant-time string comparison — the ONE shared implementation for every
+ * secret comparison in the service (bearer token, webhook clientState), so a
+ * hardening change can never apply to one path and miss the other.
+ */
+export function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 /** Resolve the key buffer, failing loudly when the service runs keyless. */
 function keyBuffer(): Buffer {

@@ -8,10 +8,9 @@
  */
 import { Router } from 'express';
 import type { Db } from '../db.js';
-import { EmailToolError, mapGraphError } from '../errors.js';
-import { logError } from '../logger.js';
 import { OPERATIONS, runOperation } from '../ops/index.js';
 import type { MsGraphProvider } from '../providers/msgraph/types.js';
+import { respondWithError } from './respond.js';
 
 /** Build the /ops router over injected db + provider. */
 export function opsRouter(db: Db, provider: MsGraphProvider): Router {
@@ -35,9 +34,7 @@ export function opsRouter(db: Db, provider: MsGraphProvider): Router {
       );
       res.status(200).json({ ok: true, replayed, ...(result as Record<string, unknown>) });
     } catch (err) {
-      const mapped = err instanceof EmailToolError ? err : mapGraphError(err);
-      if (mapped.httpStatus >= 500) logError(`operation ${name} failed`, err);
-      res.status(mapped.httpStatus).json(mapped.toBody());
+      respondWithError(res, err, `operation ${name}`);
     }
   });
 

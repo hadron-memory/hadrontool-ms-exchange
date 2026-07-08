@@ -10,35 +10,21 @@
  *    delivered at-least-once. Must 202 fast; processing is async.
  *
  * Hardening vs the PR #51 draft this salvages:
- *  - clientState is an HMAC of (connectionId, folder) under
- *    WEBHOOK_CLIENT_STATE_SECRET — not the raw connection id — and is
+ *  - clientState is an HMAC of (connectionId, folder) — never a raw id —
  *    verified against the Subscription row before any DB-driven work.
- *  - Redeliveries are deduped via ProcessedNotification.
+ *  - Redeliveries are deduped via ProcessedNotification, and the dedupe row
+ *    is RELEASED when processing fails after the insert — otherwise a
+ *    transient failure would swallow Graph's redelivery and lose the event
+ *    permanently (the 202 was already sent; redelivery is the only retry).
  */
-import { createHmac, timingSafeEqual } from 'crypto';
 import { Router } from 'express';
-import { config } from '../config.js';
-import { decryptToken } from '../crypto.js';
+import { withConnection } from '../connectionCall.js';
 import type { Db } from '../db.js';
 import type { EmailEvent, EventForwarder } from '../events/forwarder.js';
 import { logError, logInfo } from '../logger.js';
 import { normalizeMessage } from '../ops/index.js';
 import type { MsGraphProvider } from '../providers/msgraph/types.js';
-
-/** Derive the clientState HMAC for a (connection, folder) subscription. */
-export function hmacClientState(connectionId: string, folder: string): string {
-  if (!config.webhookClientStateSecret) {
-    throw new Error('WEBHOOK_CLIENT_STATE_SECRET is not configured');
-  }
-  return createHmac('sha256', config.webhookClientStateSecret).update(`${connectionId}:${folder}`).digest('hex');
-}
-
-/** Constant-time hex comparison. */
-function safeEqualHex(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
-}
+import { FOLDER_EVENTS, isSubscribableFolder, verifyClientState } from '../subscriptions.js';
 
 interface GraphNotification {
   subscriptionId?: string;
@@ -53,9 +39,15 @@ function messageIdFromResource(resource: string | undefined): string | null {
   return id && id.length > 0 ? id : null;
 }
 
+/** Prisma unique-violation check (P2002). */
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === 'P2002';
+}
+
 /**
  * Process one notification: verify, dedupe, fetch, normalize, forward.
- * Failures are logged, never thrown — Graph retries drop into the dedupe.
+ * Failures are logged, never thrown to Express — but a failure AFTER the
+ * dedupe insert releases the row so Graph's redelivery gets processed.
  */
 async function processNotification(
   db: Db,
@@ -73,8 +65,7 @@ async function processNotification(
   if (!subscription || subscription.connection.deletedAt) return;
 
   // Authenticity: Graph echoes the clientState we set at subscribe time.
-  const expected = hmacClientState(subscription.connectionId, subscription.folder);
-  if (!safeEqualHex(clientState, expected)) {
+  if (!verifyClientState(clientState, subscription.connectionId, subscription.folder)) {
     logError(`webhook clientState mismatch for subscription ${subscriptionId} — dropping`);
     return;
   }
@@ -83,18 +74,22 @@ async function processNotification(
   if (!messageId) return;
 
   // At-least-once delivery → process each (subscription, message) once.
+  // Only a unique violation means "already processed"; any other DB error
+  // propagates (no row was written, so redelivery will retry).
   const dedupeId = `${subscriptionId}:${messageId}`;
   try {
     await db.processedNotification.create({ data: { id: dedupeId } });
-  } catch {
-    return; // already processed (unique-violation) — a Graph redelivery
+  } catch (err) {
+    if (isUniqueViolation(err)) return; // a Graph redelivery
+    throw err;
   }
 
   try {
-    const refreshToken = decryptToken(subscription.connection.refreshTokenEnc);
-    const { data: message } = await provider.getMessage(refreshToken, messageId);
+    const message = await withConnection(db, subscription.connectionId, { resource: 'message', id: messageId }, (token) =>
+      provider.getMessage(token, messageId),
+    );
     const event: EmailEvent = {
-      event: subscription.folder === 'sentitems' ? 'email.sent' : 'email.received',
+      event: isSubscribableFolder(subscription.folder) ? FOLDER_EVENTS[subscription.folder] : 'email.received',
       connectionId: subscription.connectionId,
       folder: subscription.folder,
       message: normalizeMessage(message),
@@ -102,7 +97,8 @@ async function processNotification(
     logInfo(`${event.event} in ${subscription.connection.mailboxEmail}: "${event.message.subject ?? ''}"`);
     await forward(event);
   } catch (err) {
-    logError(`failed to process notification ${dedupeId}`, err);
+    logError(`failed to process notification ${dedupeId} — releasing dedupe for redelivery`, err);
+    await db.processedNotification.delete({ where: { id: dedupeId } }).catch(() => {});
   }
 }
 

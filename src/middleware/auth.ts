@@ -8,14 +8,7 @@
  */
 import type { NextFunction, Request, Response } from 'express';
 import { config } from '../config.js';
-import { timingSafeEqual } from 'crypto';
-
-/** Constant-time string comparison (defends the shared token). */
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ab.length === bb.length && timingSafeEqual(ab, bb);
-}
+import { safeEqual } from '../crypto.js';
 
 /** Express middleware enforcing the shared bearer token when configured. */
 export function requireToolToken(req: Request, res: Response, next: NextFunction): void {

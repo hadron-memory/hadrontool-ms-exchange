@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { renewExpiringSubscriptions } from './renewal.js';
 import { encryptToken } from '../crypto.js';
 import { db } from '../db.js';
-import { fakeProvider } from '../test/fakes.js';
+import { fakeProvider, resetDb } from '../test/fakes.js';
 
 /** Seed a connection with one subscription expiring in `hours` hours. */
 async function seed(hours: number, status: 'ACTIVE' | 'ERROR' = 'ACTIVE') {
@@ -20,10 +20,7 @@ async function seed(hours: number, status: 'ACTIVE' | 'ERROR' = 'ACTIVE') {
   return { connection, subscription };
 }
 
-beforeEach(async () => {
-  await db.subscription.deleteMany();
-  await db.connection.deleteMany();
-});
+beforeEach(() => resetDb(db));
 
 describe('renewExpiringSubscriptions', () => {
   it('renews only subscriptions inside the 12h lookahead window', async () => {
@@ -57,5 +54,31 @@ describe('renewExpiringSubscriptions', () => {
     const provider = fakeProvider();
     await renewExpiringSubscriptions(db, provider);
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it('marks the connection ERROR and does NOT re-register when the grant is dead', async () => {
+    const { connection } = await seed(1);
+    const provider = fakeProvider({ failWith: { methods: ['renewSubscription'], error: { statusCode: 401 } } });
+
+    await renewExpiringSubscriptions(db, provider);
+
+    expect(provider.calls.filter(([m]) => m === 'createSubscription')).toHaveLength(0);
+    const row = await db.connection.findUniqueOrThrow({ where: { id: connection.id } });
+    expect(row.status).toBe('ERROR');
+  });
+
+  it('does not let one undecryptable token abort the pass for other subscriptions', async () => {
+    const bad = await seed(1);
+    await db.connection.update({
+      where: { id: bad.connection.id },
+      data: { refreshTokenEnc: 'not-valid-ciphertext' },
+    });
+    const good = await seed(2);
+    const provider = fakeProvider();
+
+    await renewExpiringSubscriptions(db, provider);
+
+    const renewed = provider.calls.filter(([m]) => m === 'renewSubscription');
+    expect(renewed.some(([, args]) => args[1] === good.subscription.graphSubscriptionId)).toBe(true);
   });
 });

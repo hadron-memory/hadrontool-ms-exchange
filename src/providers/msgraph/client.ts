@@ -49,16 +49,27 @@ async function withToken<T>(
   const client = createGraphClient(tokenRes.access_token);
   const newRefreshToken = tokenRes.refresh_token !== refreshToken ? tokenRes.refresh_token : undefined;
   try {
-    const data = await fn(client);
-    return { data, newRefreshToken };
-  } catch (err) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
-    if (statusCode === 429) {
-      const rawRetry = (err as { headers?: { get?: (h: string) => string | null } })?.headers?.get?.('Retry-After');
-      const retryAfter = parseInt(rawRetry ?? '5', 10);
-      await new Promise((resolve) => setTimeout(resolve, (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000));
+    try {
       const data = await fn(client);
       return { data, newRefreshToken };
+    } catch (err) {
+      const statusCode = (err as { statusCode?: number })?.statusCode;
+      if (statusCode === 429) {
+        const rawRetry = (err as { headers?: { get?: (h: string) => string | null } })?.headers?.get?.('Retry-After');
+        const retryAfter = parseInt(rawRetry ?? '5', 10);
+        await new Promise((resolve) => setTimeout(resolve, (Number.isFinite(retryAfter) ? retryAfter : 5) * 1000));
+        const data = await fn(client);
+        return { data, newRefreshToken };
+      }
+      throw err;
+    }
+  } catch (err) {
+    // The refresh SUCCEEDED before fn() failed — a rotated token must still
+    // reach the caller or (on rotating tenants) one harmless Graph error
+    // permanently strands the connection. withConnection persists it from
+    // the error object.
+    if (newRefreshToken && err != null && typeof err === 'object') {
+      (err as { newRefreshToken?: string }).newRefreshToken = newRefreshToken;
     }
     throw err;
   }

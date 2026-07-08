@@ -118,6 +118,16 @@ export class ProviderNotConfiguredError extends EmailToolError {
   }
 }
 
+/**
+ * Build a ValidationError from a zod failure — the ONE place the
+ * first-issue/path-join convention lives; `field`/`reason` are part of the
+ * stable public error contract, so every plane must flatten identically.
+ */
+export function validationFromZod(err: { issues: { path: PropertyKey[]; message: string }[] }): ValidationError {
+  const issue = err.issues[0];
+  return new ValidationError(issue?.path.map(String).join('.') || 'input', issue?.message ?? 'invalid input');
+}
+
 /** Shape of the error object the Microsoft Graph SDK throws. */
 interface GraphErrorLike {
   statusCode?: number;

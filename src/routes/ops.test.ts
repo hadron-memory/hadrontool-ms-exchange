@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { encryptToken, decryptToken } from '../crypto.js';
 import { db } from '../db.js';
-import { fakeProvider } from '../test/fakes.js';
+import { fakeProvider, resetDb } from '../test/fakes.js';
 
 const AUTH = { Authorization: 'Bearer test-tool-token' };
 
@@ -15,12 +15,7 @@ async function seedConnection(refreshToken = 'rt-original'): Promise<string> {
   return row.id;
 }
 
-beforeEach(async () => {
-  await db.processedNotification.deleteMany();
-  await db.idempotencyRecord.deleteMany();
-  await db.subscription.deleteMany();
-  await db.connection.deleteMany();
-});
+beforeEach(() => resetDb(db));
 
 describe('POST /ops/:operation', () => {
   it('rejects calls without the bearer token', async () => {
@@ -62,7 +57,8 @@ describe('POST /ops/:operation', () => {
     expect(method).toBe('listMessages');
     expect(args[0]).toBe('rt-original');
     expect(args[1]).toBe('inbox');
-    expect(args[2]).toMatchObject({ filter: 'isRead eq false' });
+    // Graph requires the $orderby property to lead the $filter when combined.
+    expect(args[2]).toMatchObject({ filter: 'receivedDateTime ge 1970-01-01T00:00:00Z and isRead eq false' });
   });
 
   it('persists a rotated refresh token', async () => {
@@ -137,6 +133,79 @@ describe('POST /ops/:operation', () => {
       .send({ connectionId, draftId: 'd', idempotencyKey: 'shared' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('validation_error');
+  });
+
+  it('persists a rotated refresh token even when the Graph call fails', async () => {
+    const connectionId = await seedConnection('rt-original');
+    // The real client attaches newRefreshToken to the thrown error when the
+    // refresh succeeded before the Graph call failed — the fake simulates that.
+    const app = createApp(
+      db,
+      fakeProvider({ failWith: { methods: ['getMessage'], error: { statusCode: 404, newRefreshToken: 'rt-rotated-on-failure' } } }),
+      async () => {},
+    );
+
+    const res = await request(app).post('/ops/get-message').set(AUTH).send({ connectionId, messageId: 'gone' });
+    expect(res.status).toBe(404);
+
+    const row = await db.connection.findUniqueOrThrow({ where: { id: connectionId } });
+    expect(decryptToken(row.refreshTokenEnc)).toBe('rt-rotated-on-failure');
+  });
+
+  it('rejects an idempotencyKey replayed with a different payload', async () => {
+    const connectionId = await seedConnection();
+    const app = createApp(db, fakeProvider(), async () => {});
+
+    await request(app)
+      .post('/ops/reply-to-message')
+      .set(AUTH)
+      .send({ connectionId, messageId: 'm-1', bodyHtml: '<p>A</p>', idempotencyKey: 'key-p' })
+      .expect(200);
+    const res = await request(app)
+      .post('/ops/reply-to-message')
+      .set(AUTH)
+      .send({ connectionId, messageId: 'm-1', bodyHtml: '<p>B — different!</p>', idempotencyKey: 'key-p' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('validation_error');
+  });
+
+  it('rejects a key whose original request is still in flight (no double execution)', async () => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider();
+    const app = createApp(db, provider, async () => {});
+
+    // Simulate an in-flight original: a reservation row with no response yet.
+    await db.idempotencyRecord.create({
+      data: { key: 'key-inflight', operation: 'send-draft', requestHash: 'someone-elses-hash', responseJson: null },
+    });
+    const res = await request(app)
+      .post('/ops/send-draft')
+      .set(AUTH)
+      .send({ connectionId, draftId: 'd-1', idempotencyKey: 'key-inflight' });
+    expect(res.status).toBe(400);
+    expect(provider.calls.filter(([m]) => m === 'sendDraft')).toHaveLength(0);
+  });
+
+  it('releases the reservation when the operation fails so a retry can execute', async () => {
+    const connectionId = await seedConnection();
+    const failing = createApp(
+      db,
+      fakeProvider({ failWith: { methods: ['sendDraft'], error: { statusCode: 503 } } }),
+      async () => {},
+    );
+    await request(failing)
+      .post('/ops/send-draft')
+      .set(AUTH)
+      .send({ connectionId, draftId: 'd-1', idempotencyKey: 'key-retry' })
+      .expect(502);
+
+    const working = createApp(db, fakeProvider(), async () => {});
+    const res = await request(working)
+      .post('/ops/send-draft')
+      .set(AUTH)
+      .send({ connectionId, draftId: 'd-1', idempotencyKey: 'key-retry' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ sent: true, replayed: false });
   });
 
   it('maps provider auth failure to connection_unauthorized and marks the connection ERROR', async () => {

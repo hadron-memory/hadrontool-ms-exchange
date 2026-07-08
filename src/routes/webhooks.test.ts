@@ -1,11 +1,11 @@
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
-import { hmacClientState } from './webhooks.js';
 import { encryptToken } from '../crypto.js';
 import { db } from '../db.js';
 import type { EmailEvent } from '../events/forwarder.js';
-import { fakeProvider } from '../test/fakes.js';
+import { hmacClientState } from '../subscriptions.js';
+import { fakeProvider, resetDb } from '../test/fakes.js';
 
 /** Seed a connection + inbox/sentitems subscription; returns ids. */
 async function seedSubscribedConnection(folder = 'inbox') {
@@ -42,12 +42,7 @@ function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 50));
 }
 
-beforeEach(async () => {
-  await db.processedNotification.deleteMany();
-  await db.idempotencyRecord.deleteMany();
-  await db.subscription.deleteMany();
-  await db.connection.deleteMany();
-});
+beforeEach(() => resetDb(db));
 
 describe('POST /webhooks/msgraph', () => {
   it('echoes the validationToken as text/plain (subscription handshake)', async () => {
@@ -135,6 +130,33 @@ describe('POST /webhooks/msgraph', () => {
     await request(app).post('/webhooks/msgraph').send(body).expect(202);
     await settle();
 
+    expect(events).toHaveLength(1);
+  });
+
+  it('releases the dedupe row on processing failure so the redelivery is processed', async () => {
+    const { connection, subscription } = await seedSubscribedConnection('inbox');
+    const events: EmailEvent[] = [];
+    const body = notification(subscription.graphSubscriptionId, hmacClientState(connection.id, 'inbox'));
+
+    // First delivery: transient Graph failure after the dedupe insert.
+    const failing = createApp(
+      db,
+      fakeProvider({ failWith: { methods: ['getMessage'], error: { statusCode: 503 } } }),
+      async (e) => {
+        events.push(e);
+      },
+    );
+    await request(failing).post('/webhooks/msgraph').send(body).expect(202);
+    await settle();
+    expect(events).toHaveLength(0);
+    expect(await db.processedNotification.count()).toBe(0); // released
+
+    // Graph redelivers; a healthy pass processes it.
+    const working = createApp(db, fakeProvider(), async (e) => {
+      events.push(e);
+    });
+    await request(working).post('/webhooks/msgraph').send(body).expect(202);
+    await settle();
     expect(events).toHaveLength(1);
   });
 

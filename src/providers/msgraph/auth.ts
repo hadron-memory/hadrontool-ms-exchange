@@ -6,7 +6,7 @@
  * Hadron owns ONE multi-tenant Azure AD app; this tool holds its client
  * secret — hadron-server only builds the user-facing authorize URL.
  */
-import { ProviderNotConfiguredError } from '../../errors.js';
+import { ConnectionUnauthorizedError, ProviderNotConfiguredError } from '../../errors.js';
 import { config } from '../../config.js';
 import type { MicrosoftProfile, TokenResponse } from './types.js';
 
@@ -67,6 +67,13 @@ async function postToken(body: URLSearchParams, what: string): Promise<TokenResp
   });
   if (!res.ok) {
     const err = await res.text();
+    // A dead grant (revoked consent, expired/superseded refresh token) is an
+    // HTTP 400 invalid_grant from the token endpoint — that is a
+    // connection_unauthorized, NOT a validation error: the connection must be
+    // marked ERROR and the user told to reconnect.
+    if (res.status === 400 && err.includes('invalid_grant')) {
+      throw new ConnectionUnauthorizedError();
+    }
     const failure = new Error(`Microsoft ${what} failed: ${err}`) as Error & { statusCode: number };
     failure.statusCode = res.status;
     throw failure;

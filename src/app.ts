@@ -10,8 +10,9 @@
  *   *    /connections…                     connection plane   (bearer-gated, internal)
  *   POST /webhooks/msgraph                 Graph notifications (PUBLIC — Traefik routes only this)
  */
-import express, { type Express } from 'express';
+import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { config } from './config.js';
+import { logError } from './logger.js';
 import type { Db } from './db.js';
 import type { EventForwarder } from './events/forwarder.js';
 import { requireToolToken } from './middleware/auth.js';
@@ -56,6 +57,24 @@ export function createApp(db: Db, provider: MsGraphProvider, forward: EventForwa
   app.use('/ops', requireToolToken, opsRouter(db, provider));
   app.use('/connections', requireToolToken, connectionsRouter(db, provider));
   app.use('/webhooks', webhooksRouter(db, provider, forward));
+
+  // Errors thrown OUTSIDE route try/catch blocks — body-parse failures
+  // included — get the service's uniform JSON error shape, never Express's
+  // default HTML page (which /webhooks/msgraph would otherwise expose to
+  // the internet).
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      next(err);
+      return;
+    }
+    const isParseError = err instanceof SyntaxError || (err as { type?: string } | null)?.type === 'entity.parse.failed';
+    if (isParseError) {
+      res.status(400).json({ error: 'validation_error', message: 'request body is not valid JSON', field: 'body' });
+      return;
+    }
+    logError('unhandled route error', err);
+    res.status(500).json({ error: 'internal_error', message: 'internal error' });
+  });
 
   return app;
 }

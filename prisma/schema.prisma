@@ -77,12 +77,19 @@ model ProcessedNotification {
 }
 
 /// Idempotency records for mutating operations (at-least-once callers).
-/// A replayed key returns the stored response without touching the provider.
+/// Created as an in-flight RESERVATION before the provider mutation runs
+/// (responseJson null), completed with the response after — so concurrent
+/// duplicates cannot both execute. A replayed completed key returns the
+/// stored response without touching the provider.
 model IdempotencyRecord {
   key          String   @id
   operation    String
-  /// JSON-serialized operation response returned on replay.
-  responseJson String   @map("response_json")
+  /// SHA-256 of the operation input — a key replayed with a DIFFERENT
+  /// payload is rejected instead of leaking the stored response.
+  requestHash  String   @map("request_hash")
+  /// JSON-serialized operation response; null while the original request is
+  /// still in flight.
+  responseJson String?  @map("response_json")
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])

@@ -14,14 +14,15 @@
  */
 import { Router } from 'express';
 import { z } from 'zod';
-import { hmacClientState } from './webhooks.js';
-import { config } from '../config.js';
-import { encryptToken, decryptToken } from '../crypto.js';
+import { withConnection } from '../connectionCall.js';
+import { encryptToken } from '../crypto.js';
 import type { Db } from '../db.js';
-import { ConnectionNotFoundError, EmailToolError, ValidationError, mapGraphError } from '../errors.js';
+import { ConnectionNotFoundError, ValidationError } from '../errors.js';
 import { logError, logInfo } from '../logger.js';
 import { decodeIdToken } from '../providers/msgraph/auth.js';
 import type { MsGraphProvider } from '../providers/msgraph/types.js';
+import { isSubscribableFolder, registerFolderSubscription } from '../subscriptions.js';
+import { respondWithError } from './respond.js';
 
 const createSchema = z
   .object({
@@ -42,9 +43,6 @@ const subscribeSchema = z.object({
     .transform((f) => f.toLowerCase()),
 });
 
-/** Well-known Graph folders the event plane understands. */
-const SUBSCRIBABLE_FOLDERS = new Set(['inbox', 'sentitems']);
-
 /** Build the /connections router over injected db + provider. */
 export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
   const router = Router();
@@ -61,6 +59,15 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
 
       if (input.code) {
         const tokens = await provider.exchangeCode(input.code, input.redirectUri!);
+        // TokenResponse types refresh_token as present, but Microsoft omits
+        // it when offline_access wasn't actually granted (tenant policy,
+        // partial consent) — surface the real cause, not a crypto crash.
+        if (!tokens.refresh_token) {
+          throw new ValidationError(
+            'code',
+            'Microsoft did not return a refresh token — the offline_access scope was not granted',
+          );
+        }
         refreshToken = tokens.refresh_token;
         // ID-token claims first (works for personal accounts), /me fallback.
         const idClaims = decodeIdToken(tokens.id_token ?? '');
@@ -90,7 +97,7 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
         status: connection.status,
       });
     } catch (err) {
-      respondWithError(res, err);
+      respondWithError(res, err, 'create connection');
     }
   });
 
@@ -115,7 +122,7 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
         })),
       });
     } catch (err) {
-      respondWithError(res, err);
+      respondWithError(res, err, 'get connection');
     }
   });
 
@@ -130,8 +137,9 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
 
       for (const sub of connection.subscriptions) {
         try {
-          const refreshToken = decryptToken(connection.refreshTokenEnc);
-          await provider.deleteSubscription(refreshToken, sub.graphSubscriptionId);
+          await withConnection(db, connection.id, undefined, (token) =>
+            provider.deleteSubscription(token, sub.graphSubscriptionId),
+          );
         } catch (err) {
           logError(`failed to delete Graph subscription ${sub.graphSubscriptionId} (continuing)`, err);
         }
@@ -140,7 +148,7 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
       await db.connection.update({ where: { id: connection.id }, data: { deletedAt: new Date() } });
       res.json({ deleted: true });
     } catch (err) {
-      respondWithError(res, err);
+      respondWithError(res, err, 'delete connection');
     }
   });
 
@@ -148,55 +156,18 @@ export function connectionsRouter(db: Db, provider: MsGraphProvider): Router {
   router.post('/:id/subscriptions', async (req, res) => {
     try {
       const { folder } = subscribeSchema.parse(req.body ?? {});
-      if (!SUBSCRIBABLE_FOLDERS.has(folder)) {
-        throw new ValidationError('folder', `folder must be one of: ${[...SUBSCRIBABLE_FOLDERS].join(', ')}`);
-      }
-      if (!config.webhookBaseUrl) {
-        throw new ValidationError('server', 'WEBHOOK_BASE_URL is not configured on this service');
+      if (!isSubscribableFolder(folder)) {
+        throw new ValidationError('folder', `folder must be a subscribable folder (inbox, sentitems)`);
       }
       const connection = await db.connection.findUnique({ where: { id: req.params.id } });
       if (!connection || connection.deletedAt) throw new ConnectionNotFoundError();
 
-      const refreshToken = decryptToken(connection.refreshTokenEnc);
-      const clientState = hmacClientState(connection.id, folder);
-      const { data: sub } = await provider.createSubscription(
-        refreshToken,
-        `${config.webhookBaseUrl}/webhooks/msgraph`,
-        clientState,
-        `/me/mailFolders/${folder}/messages`,
-      );
-      const row = await db.subscription.upsert({
-        where: { connectionId_folder: { connectionId: connection.id, folder } },
-        create: {
-          connectionId: connection.id,
-          folder,
-          graphSubscriptionId: sub.id,
-          expiresAt: new Date(sub.expirationDateTime),
-        },
-        update: {
-          graphSubscriptionId: sub.id,
-          expiresAt: new Date(sub.expirationDateTime),
-        },
-      });
-      logInfo(`subscription created: ${connection.mailboxEmail} ${folder} (expires ${sub.expirationDateTime})`);
+      const row = await registerFolderSubscription(db, provider, connection.id, folder);
       res.status(201).json({ folder: row.folder, expiresAt: row.expiresAt.toISOString() });
     } catch (err) {
-      respondWithError(res, err);
+      respondWithError(res, err, 'subscribe folder');
     }
   });
 
   return router;
-}
-
-/** Uniform error → HTTP response mapping for this router. */
-function respondWithError(res: import('express').Response, err: unknown): void {
-  if (err instanceof z.ZodError) {
-    const issue = err.issues[0];
-    const mapped = new ValidationError(issue?.path.join('.') || 'input', issue?.message ?? 'invalid input');
-    res.status(mapped.httpStatus).json(mapped.toBody());
-    return;
-  }
-  const mapped = err instanceof EmailToolError ? err : mapGraphError(err);
-  if (mapped.httpStatus >= 500) logError('connection route failure', err);
-  res.status(mapped.httpStatus).json(mapped.toBody());
 }
