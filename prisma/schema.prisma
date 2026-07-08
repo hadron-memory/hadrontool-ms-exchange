@@ -1,0 +1,97 @@
+// hadrontool-ms-exchange — the tool's OWN small database.
+//
+// Boundary (hadron-server#396, decided 2026-07-08): this tool owns everything
+// provider-specific — encrypted Microsoft refresh tokens, Graph webhook
+// subscription state, notification dedupe, idempotency records. hadron-server
+// keeps only the connection identity record and runs authorization BEFORE it
+// ever calls this service; there are zero Graph columns in core.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  ERROR
+}
+
+/// One connected Microsoft mailbox. The `id` is returned to hadron-server at
+/// creation time and is the `connectionId` every operation call carries.
+model Connection {
+  id                String           @id @default(cuid())
+  provider          String           @default("ms-exchange")
+  mailboxEmail      String           @map("mailbox_email")
+  displayName       String?          @map("display_name")
+  /// AES-256-GCM-encrypted MS Graph refresh token (iv‖tag‖ciphertext, base64),
+  /// under this tool's own TOKEN_ENCRYPTION_KEY — never core's key.
+  refreshTokenEnc   String           @map("refresh_token_enc")
+  status            ConnectionStatus @default(ACTIVE)
+  /// Error message from the last permanent provider-auth failure.
+  lastError         String?          @map("last_error")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+  deletedAt         DateTime?        @map("deleted_at")
+
+  subscriptions Subscription[]
+
+  @@index([mailboxEmail])
+  @@map("connections")
+}
+
+/// One Graph change-notification subscription (per connection, per folder).
+/// Graph subscriptions live at most ~3 days; the renewal worker watches
+/// `expiresAt` and renews or re-registers.
+model Subscription {
+  id                  String   @id @default(cuid())
+  connectionId        String   @map("connection_id")
+  /// Well-known Graph folder name the subscription watches, e.g. `inbox`,
+  /// `sentitems`. Lowercase.
+  folder              String
+  graphSubscriptionId String   @unique @map("graph_subscription_id")
+  expiresAt           DateTime @map("expires_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  connection Connection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, folder])
+  @@map("subscriptions")
+}
+
+/// Dedupe ledger for inbound Graph notifications — Graph delivers
+/// at-least-once, so each (subscription, message) pair is processed once.
+/// Rows are prunable after a retention window (notifications never arrive
+/// weeks late).
+model ProcessedNotification {
+  /// `<graphSubscriptionId>:<messageId>`
+  id          String   @id
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@index([processedAt])
+  @@map("processed_notifications")
+}
+
+/// Idempotency records for mutating operations (at-least-once callers).
+/// Created as an in-flight RESERVATION before the provider mutation runs
+/// (responseJson null), completed with the response after — so concurrent
+/// duplicates cannot both execute. A replayed completed key returns the
+/// stored response without touching the provider.
+model IdempotencyRecord {
+  key          String   @id
+  operation    String
+  /// SHA-256 of the operation input — a key replayed with a DIFFERENT
+  /// payload is rejected instead of leaking the stored response.
+  requestHash  String   @map("request_hash")
+  /// JSON-serialized operation response; null while the original request is
+  /// still in flight.
+  responseJson String?  @map("response_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("idempotency_records")
+}
