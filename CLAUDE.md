@@ -49,15 +49,15 @@ auto-generates.
 
 This tool has no memory of its own yet — work against the shared ones:
 
-- `hrn:memory:hadronmemory.com::dev` — shared findings, conventions, ops, the `preflight` routing index
-- `hrn:memory:hadronmemory.com::specs` — product specs (loc-as-citation)
-- `hrn:memory:hadronmemory.com::hadron-server` — the platform core this tool integrates with
+- `hrn:mem:hadronmemory.com:dev` — shared findings, conventions, ops, the `preflight` routing index
+- `hrn:mem:hadronmemory.com:specs` — product specs (loc-as-citation)
+- `hrn:mem:hadronmemory.com:hadron-server` — the platform core this tool integrates with
 
 (1) **Query Hadron before reading code/design.** Run `hadron_find_nodes` first, then
 `hadron_get_node` on promising hits; cite node `loc` values.
 
-(2) Read `hadron_get_node hrn:node:hadronmemory.com::dev::instructions` once per session, and
-`hadron_get_node hrn:node:hadronmemory.com::dev::preflight` before a change.
+(2) Read `hadron_get_node hrn:node:hadronmemory.com:dev:instructions` once per session, and
+`hadron_get_node hrn:node:hadronmemory.com:dev:preflight` before a change.
 
 (3) Capture a non-obvious finding the moment it emerges (`hadron_create_node` / `hadron_update_node`).
 
@@ -66,7 +66,7 @@ This tool has no memory of its own yet — work against the shared ones:
 **Contract & design sources**:
 - Spec 002 — *Generic Email Tool* (spec-kits): operation names, typed error codes, the `filter`
   shape. (`AgentEmailGrant` is a CORE concern, deferred — owner-only auth in v1.)
-- `hadronmemory.com::hadrontool-pdf::reference:hadrontool-email` — the extraction decisions
+- `hrn:node:hadronmemory.com:hadrontool-pdf:reference:hadrontool-email` — the extraction decisions
   (2026-07-08: HTTP-callback events, tool-owned tokens, owner-only v1, one-tool-per-provider).
 
 ## Key invariants
