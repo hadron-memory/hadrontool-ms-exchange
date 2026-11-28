@@ -21,6 +21,7 @@ const SCOPES = [
   'Mail.ReadWrite',
   'Mail.Send',
   'MailboxSettings.Read',
+  'Calendars.Read', // get-schedule + list-events (read only; no Calendars.ReadWrite)
 ];
 
 /** The Azure AD app credentials; typed 503 when the deploy lacks them. */

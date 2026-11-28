@@ -39,6 +39,26 @@ in production the service refuses to start without it. Only
 `send-draft`, `delete-message`, `mark-read`, `flag-message`,
 `categorize-message`.
 
+**Calendar reads** (non-mutating, delegated `Calendars.Read`; hadron-server#633):
+
+- `get-schedule` `{ connectionId, start, end, schedules? }` → `{ schedules: [{ id, busy: [{start,end}], error }] }`.
+  Busy intervals only (busy, tentative and out-of-office); no subject, location
+  or attendee is ever read. `schedules` are addresses (1-20); the default
+  `primary` is the connection's own mailbox.
+- `list-events` `{ connectionId, start, end, top? }` → `{ events: [ToolCalendarEvent] }` from the
+  primary calendar (`calendarView`, expanded recurrences, start-ordered, `top` 1-100, default 25).
+- `start` and `end` are RFC 3339 with a `Z` or UTC offset, required, `end` after `start`, and
+  at most 31 days apart (`MAX_WINDOW_DAYS` in `src/ops/calendar.ts`); a bad window, `top` or
+  schedule count is a `validation_error` before any Graph call.
+- No `get-event`, `list-calendars` or calendar write operation exists.
+
+**Re-consent:** `Calendars.Read` is added to the scopes requested at connect, and it must also be
+added to the Azure AD app registration before it can be granted. A connection made before that has
+a token without it: its calendar reads answer `provider_scope_missing` (HTTP 403, `scope` field).
+That is NOT `connection_unauthorized`: the mailbox grant is intact, the connection is not marked
+`ERROR`, and mail keeps working. The user reconnects to grant the scope. New connections get it at
+consent time.
+
 Request body: the operation input (always includes `connectionId`) plus an
 optional `idempotencyKey` on mutating operations — a replayed key returns the
 stored response without touching Microsoft. Errors use the spec 002 typed

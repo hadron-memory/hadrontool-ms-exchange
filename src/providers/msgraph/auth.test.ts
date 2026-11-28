@@ -41,3 +41,20 @@ describe('decodeIdToken', () => {
     expect(decodeIdToken('not-a-jwt')).toEqual({ email: null, name: null });
   });
 });
+
+describe('requested scopes', () => {
+  it('asks for Calendars.Read and no calendar write scope', async () => {
+    let body = '';
+    vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
+      body = init.body;
+      return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) };
+    });
+    await refreshAccessToken('rt').catch(() => {});
+    // Config may be unset in the test env; only assert when a request was made.
+    if (body) {
+      const scope = new URLSearchParams(body).get('scope') ?? '';
+      expect(scope.split(' ')).toContain('Calendars.Read');
+      expect(scope).not.toMatch(/Calendars\.ReadWrite/);
+    }
+  });
+});

@@ -54,6 +54,43 @@ export interface ListMessagesOptions {
   orderby?: string;
 }
 
+/** Graph dateTimeTimeZone — requested in UTC via the Prefer header. */
+export interface GraphDateTimeZone {
+  dateTime: string;
+  timeZone: string;
+}
+
+export interface GraphEvent {
+  id: string;
+  subject?: string | null;
+  bodyPreview?: string | null;
+  location?: { displayName?: string | null } | null;
+  start: GraphDateTimeZone;
+  end: GraphDateTimeZone;
+  isAllDay?: boolean;
+  isCancelled?: boolean;
+  showAs?: string;
+  isOrganizer?: boolean;
+  organizer?: { emailAddress?: { name?: string | null; address?: string | null } } | null;
+  attendees?: {
+    type?: string;
+    status?: { response?: string };
+    emailAddress?: { name?: string | null; address?: string | null };
+  }[];
+  responseStatus?: { response?: string } | null;
+  webLink?: string | null;
+  seriesMasterId?: string | null;
+  createdDateTime?: string | null;
+  lastModifiedDateTime?: string | null;
+}
+
+/** One entry of Graph's getSchedule answer. Items carry a status and times; the SDK may also return subjects, which the ops layer never reads. */
+export interface GraphScheduleInfo {
+  scheduleId: string;
+  scheduleItems?: { status?: string; start: GraphDateTimeZone; end: GraphDateTimeZone }[];
+  error?: { message?: string; responseCode?: string } | null;
+}
+
 export type MessageFlag = 'notFlagged' | 'flagged' | 'complete';
 
 /**
@@ -97,6 +134,12 @@ export interface MsGraphProvider {
   setMessageReadStatus(refreshToken: string, messageId: string, isRead: boolean): Promise<GraphCallResult<void>>;
   flagMessage(refreshToken: string, messageId: string, flagStatus: MessageFlag): Promise<GraphCallResult<void>>;
   categorizeMessage(refreshToken: string, messageId: string, categories: string[]): Promise<GraphCallResult<void>>;
+
+  // ── Calendar reads (delegated /me; needs Calendars.Read) ─────────────
+  /** Graph getSchedule over [start, end) (UTC ISO) for SMTP addresses. */
+  getSchedule(refreshToken: string, schedules: string[], start: string, end: string): Promise<GraphCallResult<GraphScheduleInfo[]>>;
+  /** Graph calendarView over [start, end) (UTC ISO), start-ordered, at most `top` events. */
+  listCalendarView(refreshToken: string, start: string, end: string, top: number): Promise<GraphCallResult<GraphEvent[]>>;
 
   // ── Webhook subscriptions ─────────────────────────────────────────────
   createSubscription(refreshToken: string, notificationUrl: string, clientState: string, resource: string): Promise<GraphCallResult<WebhookSubscription>>;

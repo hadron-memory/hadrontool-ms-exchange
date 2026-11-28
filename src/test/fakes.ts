@@ -6,6 +6,7 @@
 import type { Db } from '../db.js';
 import type {
   GraphCallResult,
+  GraphEvent,
   GraphMessage,
   MsGraphProvider,
 } from '../providers/msgraph/types.js';
@@ -31,6 +32,30 @@ export function graphMessage(overrides: Partial<GraphMessage> = {}): GraphMessag
     bodyPreview: 'When are your office hours?',
     body: { contentType: 'html', content: '<p>When are your office hours?</p>' },
     hasAttachments: false,
+    ...overrides,
+  };
+}
+
+/** Build a plausible Graph event fixture. */
+export function graphEvent(overrides: Partial<GraphEvent> = {}): GraphEvent {
+  return {
+    id: 'evt-1',
+    subject: 'Planning',
+    bodyPreview: 'Agenda inside',
+    location: { displayName: 'Room 4' },
+    start: { dateTime: '2026-12-01T15:00:00.0000000', timeZone: 'UTC' },
+    end: { dateTime: '2026-12-01T16:00:00.0000000', timeZone: 'UTC' },
+    isAllDay: false,
+    isCancelled: false,
+    showAs: 'busy',
+    isOrganizer: false,
+    organizer: { emailAddress: { name: 'Org Anizer', address: 'org@example.edu' } },
+    attendees: [{ type: 'optional', status: { response: 'tentativelyAccepted' }, emailAddress: { name: 'Al', address: 'al@example.edu' } }],
+    responseStatus: { response: 'accepted' },
+    webLink: 'https://outlook.example/evt-1',
+    seriesMasterId: null,
+    createdDateTime: '2026-11-01T00:00:00Z',
+    lastModifiedDateTime: '2026-11-02T00:00:00Z',
     ...overrides,
   };
 }
@@ -126,6 +151,33 @@ export function fakeProvider(options: FakeProviderOptions = {}): MsGraphProvider
     },
     async categorizeMessage(token, messageId, categories) {
       return record('categorizeMessage', [token, messageId, categories], undefined);
+    },
+    async getSchedule(token, schedules, start, end) {
+      return record(
+        'getSchedule',
+        [token, schedules, start, end],
+        // A fake that RETURNS subjects, so the no-contents pin can fail.
+        schedules.map((scheduleId) => ({
+          scheduleId,
+          scheduleItems: [
+            {
+              status: 'busy',
+              subject: 'Secret reorg meeting',
+              location: 'Room 9',
+              start: { dateTime: '2026-12-01T15:00:00.0000000', timeZone: 'UTC' },
+              end: { dateTime: '2026-12-01T16:00:00.0000000', timeZone: 'UTC' },
+            },
+            {
+              status: 'free',
+              start: { dateTime: '2026-12-01T17:00:00.0000000', timeZone: 'UTC' },
+              end: { dateTime: '2026-12-01T18:00:00.0000000', timeZone: 'UTC' },
+            },
+          ],
+        })),
+      );
+    },
+    async listCalendarView(token, start, end, top) {
+      return record('listCalendarView', [token, start, end, top], [graphEvent()]);
     },
     async createSubscription(token, notificationUrl, clientState, resource) {
       return record('createSubscription', [token, notificationUrl, clientState, resource], {

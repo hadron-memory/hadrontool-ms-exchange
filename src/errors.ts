@@ -40,6 +40,24 @@ export class ConnectionUnauthorizedError extends EmailToolError {
   }
 }
 
+/**
+ * The provider refused a CALENDAR read with a 403: the connection's token
+ * lacks Calendars.Read (a connection made before the scope was requested).
+ * Distinct from connection_unauthorized on purpose: the mailbox grant is
+ * still good, so the connection is NOT marked ERROR and mail keeps working;
+ * the user re-consents to add the scope.
+ */
+export class ProviderScopeMissingError extends EmailToolError {
+  readonly code = 'provider_scope_missing';
+  readonly httpStatus = 403;
+  constructor(public scope: string) {
+    super(`This connection has not granted calendar access (${scope}); the user must reconnect to grant it.`);
+  }
+  protected extraFields() {
+    return { scope: this.scope };
+  }
+}
+
 /** Provider 429 — caller should retry after the indicated delay. */
 export class ProviderRateLimitedError extends EmailToolError {
   readonly code = 'provider_rate_limited';

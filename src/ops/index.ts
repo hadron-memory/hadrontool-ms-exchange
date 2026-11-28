@@ -10,7 +10,8 @@
  * v1 implements the operations that existed in hadron-server + PR #51:
  * list-messages, get-message, list-folders, reply-to-message, move-message,
  * save-draft, update-draft, send-draft, delete-message, mark-read,
- * flag-message, categorize-message. search-messages / forward-message /
+ * flag-message, categorize-message, plus the calendar reads get-schedule and
+ * list-events (hadrontool-ms-exchange#7). search-messages / forward-message /
  * attachments are additive later.
  *
  * Every operation's input is validated ONCE against its single schema
@@ -31,6 +32,19 @@ import {
   validationFromZod,
 } from '../errors.js';
 import type { GraphMessage, MessageFlag, MsGraphProvider } from '../providers/msgraph/types.js';
+import {
+  DEFAULT_TOP,
+  normalizeEvent,
+  normalizeSchedule,
+  schedulesSchema,
+  toUtcIso,
+  topSchema,
+  checkWindow,
+  windowShape,
+} from './calendar.js';
+
+/** The delegated scope the two calendar reads need; a 403 on them means it was never granted. */
+const CALENDAR_SCOPE = 'Calendars.Read';
 
 /** Provider-neutral message shape returned by every read surface. */
 export interface EmailMessage {
@@ -126,6 +140,9 @@ const markReadSchema = messageRefSchema.extend({ isRead: z.boolean().default(tru
 const flagSchema = messageRefSchema.extend({ flag: z.enum(['flagged', 'none', 'complete']).default('flagged') });
 const categorizeSchema = messageRefSchema.extend({ categories: z.array(z.string()) });
 
+const getScheduleSchema = connectionIdSchema.extend({ ...windowShape, schedules: schedulesSchema }).superRefine(checkWindow);
+const listEventsSchema = connectionIdSchema.extend({ ...windowShape, top: topSchema }).superRefine(checkWindow);
+
 /** The v1 operation registry, keyed by spec 002 operation name. */
 export const OPERATIONS: Record<string, OperationDef> = {
   'list-messages': defineOp(false, listMessagesSchema, async (db, provider, input) => {
@@ -161,6 +178,38 @@ export const OPERATIONS: Record<string, OperationDef> = {
         unreadCount: f.unreadItemCount,
       })),
     };
+  }),
+
+  // Calendar reads (non-mutating). No get-event, list-calendars or write op.
+  'get-schedule': defineOp(false, getScheduleSchema, async (db, provider, input) => {
+    const start = toUtcIso(input.start);
+    const end = toUtcIso(input.end);
+    // 'primary' is the neutral alias for the connection's own calendar; Graph wants an address.
+    let requested: string[] = [];
+    const infos = await withConnection(
+      db,
+      input.connectionId,
+      undefined,
+      (token, connection) => {
+        requested = input.schedules.map((id) => (id === 'primary' ? connection.mailboxEmail : id));
+        return provider.getSchedule(token, requested, start, end);
+      },
+      { scopeOn403: CALENDAR_SCOPE },
+    );
+    const answered = normalizeSchedule(requested, infos);
+    // Report under the id the caller used ('primary' stays 'primary').
+    return { schedules: answered.map((s, i) => ({ ...s, id: input.schedules[i] })) };
+  }),
+
+  'list-events': defineOp(false, listEventsSchema, async (db, provider, input) => {
+    const events = await withConnection(
+      db,
+      input.connectionId,
+      undefined,
+      (token) => provider.listCalendarView(token, toUtcIso(input.start), toUtcIso(input.end), input.top ?? DEFAULT_TOP),
+      { scopeOn403: CALENDAR_SCOPE },
+    );
+    return { events: events.map(normalizeEvent) };
   }),
 
   'reply-to-message': defineOp(true, replySchema, async (db, provider, input) => {

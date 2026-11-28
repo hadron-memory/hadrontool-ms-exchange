@@ -15,7 +15,9 @@ import type {
   DraftInput,
   GraphCallResult,
   GraphFolder,
+  GraphEvent,
   GraphMessage,
+  GraphScheduleInfo,
   ListMessagesOptions,
   MessageFlag,
   MsGraphProvider,
@@ -185,6 +187,31 @@ export const msGraphProvider: MsGraphProvider = {
   async categorizeMessage(refreshToken, messageId, categories) {
     return withToken(refreshToken, async (client) => {
       await client.api(`/me/messages/${messageId}`).patch({ categories });
+    });
+  },
+
+  async getSchedule(refreshToken, schedules, start, end) {
+    return withToken(refreshToken, async (client) => {
+      const response = await client.api('/me/calendar/getSchedule').post({
+        schedules,
+        startTime: { dateTime: start, timeZone: 'UTC' },
+        endTime: { dateTime: end, timeZone: 'UTC' },
+        availabilityViewInterval: 30,
+      });
+      return response.value as GraphScheduleInfo[];
+    });
+  },
+
+  async listCalendarView(refreshToken, start, end, top) {
+    return withToken(refreshToken, async (client) => {
+      const response = await client
+        .api('/me/calendarView')
+        .query({ startDateTime: start, endDateTime: end })
+        .header('Prefer', 'outlook.timezone="UTC"')
+        .top(top)
+        .orderby('start/dateTime')
+        .get();
+      return response.value as GraphEvent[];
     });
   },
 
