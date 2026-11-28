@@ -174,3 +174,15 @@ describe('POST /ops/list-events', () => {
     expect(calendarOps.sort()).toEqual(['get-schedule', 'list-events']);
   });
 });
+
+describe('a mail 403 is unchanged by the calendar scope mapping', () => {
+  it('still maps a 403 on a mail op to connection_unauthorized and marks the connection ERROR', async () => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider({ failWith: { methods: ['getMessage'], error: { statusCode: 403 } } });
+    const res = await request(createApp(db, provider, async () => {}))
+      .post('/ops/get-message').set(AUTH).send({ connectionId, messageId: 'm-1' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('connection_unauthorized');
+    expect((await db.connection.findUniqueOrThrow({ where: { id: connectionId } })).status).toBe('ERROR');
+  });
+});
