@@ -191,7 +191,7 @@ export const OPERATIONS: Record<string, OperationDef> = {
       input.connectionId,
       undefined,
       (token, connection) => {
-        requested = input.schedules.map((id) => (id === 'primary' ? connection.mailboxEmail : id));
+        requested = input.schedules.map((id) => (id.toLowerCase() === 'primary' ? connection.mailboxEmail : id));
         return provider.getSchedule(token, requested, start, end);
       },
       { scopeOn403: CALENDAR_SCOPE },

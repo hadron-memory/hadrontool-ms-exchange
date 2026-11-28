@@ -52,9 +52,9 @@ in production the service refuses to start without it. Only
   schedule count is a `validation_error` before any Graph call.
 - No `get-event`, `list-calendars` or calendar write operation exists.
 
-**Re-consent:** `Calendars.Read` is added to the scopes requested at connect, and it must also be
+**Re-consent:** hadron-server builds the authorize URL, so its scope list (hadron-server#633) must add `Calendars.Read`; this tool sends **no** `scope` on the code exchange or the refresh, so Microsoft answers with the scopes actually consented. `Calendars.Read` must also be
 added to the Azure AD app registration before it can be granted. A connection made before that has
-a token without it: its calendar reads answer `provider_scope_missing` (HTTP 403, `scope` field).
+a token without it: its calendar reads answer `provider_scope_missing` (HTTP 403, `scope` field; only for a Graph access-denied code, any other 403 is `provider_forbidden`).
 That is NOT `connection_unauthorized`: the mailbox grant is intact, the connection is not marked
 `ERROR`, and mail keeps working. The user reconnects to grant the scope. New connections get it at
 consent time.

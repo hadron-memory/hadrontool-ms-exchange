@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { decodeIdToken, refreshAccessToken } from './auth.js';
+import { SCOPES, decodeIdToken, exchangeMicrosoftCode, refreshAccessToken } from './auth.js';
 import { ConnectionUnauthorizedError } from '../../errors.js';
 
 /** Stub global fetch with a canned token-endpoint response. */
@@ -42,19 +42,23 @@ describe('decodeIdToken', () => {
   });
 });
 
-describe('requested scopes', () => {
-  it('asks for Calendars.Read and no calendar write scope', async () => {
-    let body = '';
+describe('token calls carry no scope parameter', () => {
+  it.each([
+    ['refresh', () => refreshAccessToken('rt')],
+    ['code exchange', () => exchangeMicrosoftCode('code', 'https://core.example/cb')],
+  ])('%s omits scope so Microsoft answers with the consented set', async (_n, call) => {
+    const bodies: string[] = [];
     vi.stubGlobal('fetch', async (_u: string, init: { body: string }) => {
-      body = init.body;
-      return { ok: true, status: 200, text: async () => '{}', json: async () => ({}) };
+      bodies.push(init.body);
+      return { ok: true, status: 200, text: async () => '{}', json: async () => ({ access_token: 'a', refresh_token: 'r' }) };
     });
-    await refreshAccessToken('rt').catch(() => {});
-    // Config may be unset in the test env; only assert when a request was made.
-    if (body) {
-      const scope = new URLSearchParams(body).get('scope') ?? '';
-      expect(scope.split(' ')).toContain('Calendars.Read');
-      expect(scope).not.toMatch(/Calendars\.ReadWrite/);
-    }
+    await call();
+    expect(bodies).toHaveLength(1);
+    expect(new URLSearchParams(bodies[0]).has('scope')).toBe(false);
+  });
+
+  it('documents Calendars.Read, and no calendar write scope, in the connect set', () => {
+    expect(SCOPES).toContain('Calendars.Read');
+    expect(SCOPES.join(' ')).not.toMatch(/Calendars\.ReadWrite/);
   });
 });

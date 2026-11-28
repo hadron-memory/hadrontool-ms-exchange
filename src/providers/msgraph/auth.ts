@@ -12,7 +12,16 @@ import type { MicrosoftProfile, TokenResponse } from './types.js';
 
 const AUTHORITY = 'https://login.microsoftonline.com/common/oauth2/v2.0';
 
-const SCOPES = [
+/**
+ * The scope set a connect should request. hadron-server builds the authorize
+ * URL, so its own list is what the user consents to (hadron-server#633 must add
+ * Calendars.Read there); this constant documents the set the tool expects. The
+ * tool does NOT send it on the token calls: the code exchange and the refresh
+ * omit `scope`, and Microsoft then answers with the scopes the user actually
+ * consented to. Sending a scope the consent lacks would fail the exchange for a
+ * new connection, and the refresh for every connection made before the scope.
+ */
+export const SCOPES = [
   'openid',
   'email',
   'profile',
@@ -41,7 +50,6 @@ export async function exchangeMicrosoftCode(code: string, redirectUri: string): 
     code,
     redirect_uri: redirectUri,
     grant_type: 'authorization_code',
-    scope: SCOPES.join(' '),
   });
   return postToken(body, 'token exchange');
 }
@@ -54,7 +62,6 @@ export async function refreshAccessToken(refreshToken: string): Promise<TokenRes
     client_secret: clientSecret,
     refresh_token: refreshToken,
     grant_type: 'refresh_token',
-    scope: SCOPES.join(' '),
   });
   return postToken(body, 'token refresh');
 }

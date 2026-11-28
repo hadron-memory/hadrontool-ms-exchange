@@ -17,7 +17,7 @@
  */
 import { decryptToken, encryptToken } from './crypto.js';
 import type { Db } from './db.js';
-import { ConnectionNotFoundError, ConnectionUnauthorizedError, ProviderScopeMissingError, mapGraphError } from './errors.js';
+import { ConnectionNotFoundError, ConnectionUnauthorizedError, ProviderForbiddenError, ProviderScopeMissingError, mapGraphError } from './errors.js';
 import { logError } from './logger.js';
 import type { GraphCallResult } from './providers/msgraph/types.js';
 
@@ -40,9 +40,18 @@ async function persistRotation(db: Db, connectionId: string, newRefreshToken: st
   }
 }
 
+/** Graph error codes that mean the token lacks the permission. */
+const SCOPE_DENIED_CODES = new Set(['ErrorAccessDenied', 'Authorization_RequestDenied', 'AccessDenied']);
+
 /** Per-call options for withConnection. */
 export interface WithConnectionOptions {
-  /** A Graph 403 means this scope is missing (the mailbox grant is fine): answer provider_scope_missing and do NOT mark the connection ERROR. A 401 stays connection_unauthorized. */
+  /**
+   * A Graph 403 whose error code is an access-denied code means this scope is
+   * missing (the mailbox grant is fine): answer provider_scope_missing and do NOT
+   * mark the connection ERROR. Any OTHER 403 (information barrier, conditional
+   * access) answers provider_forbidden, also without marking ERROR. A 401 stays
+   * connection_unauthorized.
+   */
   scopeOn403?: string;
 }
 
@@ -66,8 +75,13 @@ export async function withConnection<T>(
   } catch (err) {
     await persistRotation(db, connectionId, (err as { newRefreshToken?: string } | null)?.newRefreshToken);
     const status = (err as { statusCode?: number } | null)?.statusCode;
+    const code = (err as { code?: string } | null)?.code;
     const mapped =
-      options.scopeOn403 && status === 403 ? new ProviderScopeMissingError(options.scopeOn403) : mapGraphError(err, resourceHint);
+      options.scopeOn403 && status === 403
+        ? code !== undefined && SCOPE_DENIED_CODES.has(code)
+          ? new ProviderScopeMissingError(options.scopeOn403)
+          : new ProviderForbiddenError()
+        : mapGraphError(err, resourceHint);
     if (mapped instanceof ConnectionUnauthorizedError) {
       await db.connection
         .update({

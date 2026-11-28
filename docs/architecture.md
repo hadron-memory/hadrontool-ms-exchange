@@ -95,7 +95,7 @@ Requested at connect: `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `MailboxSettin
 the calendar reads, hadrontool-ms-exchange#7) `Calendars.Read`. Existing connections hold a token
 without `Calendars.Read` until the user reconnects; the refresh grant keeps the scope set it was
 consented with. Calendar ops on such a connection answer `provider_scope_missing` without touching
-the connection's status (a Graph 403 there means a missing scope; a 401 is still a dead grant).
+the connection's status (a Graph 403 with an access-denied code means a missing scope; any other 403 answers `provider_forbidden`, also without touching the status; a 401 is still a dead grant). The tool sends no `scope` on the code exchange or refresh, so Microsoft answers with the consented set; the authorize URL (built by hadron-server) is where `Calendars.Read` must be requested.
 
 ## Data model
 

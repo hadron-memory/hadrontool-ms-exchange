@@ -47,7 +47,7 @@ describe('POST /ops/get-schedule', () => {
   it.each([
     ['end before start', { start: WINDOW.end, end: WINDOW.start }],
     ['end equal to start', { start: WINDOW.start, end: WINDOW.start }],
-    ['a window past the cap', { start: WINDOW.start, end: `2027-01-${String(2 + 1).padStart(2, '0')}T00:00:00Z` }],
+    ['a window past the cap', { start: WINDOW.start, end: '2027-01-03T00:00:00Z' }],
     ['a time with no offset', { start: '2026-12-01T00:00:00', end: WINDOW.end }],
     ['a non-date', { start: 'soon', end: WINDOW.end }],
   ])('refuses %s before any Graph call', async (_n, w) => {
@@ -163,7 +163,7 @@ describe('POST /ops/list-events', () => {
 
   it('maps a 403 to provider_scope_missing', async () => {
     const connectionId = await seedConnection();
-    const provider = fakeProvider({ failWith: { methods: ['listCalendarView'], error: { statusCode: 403 } } });
+    const provider = fakeProvider({ failWith: { methods: ['listCalendarView'], error: { statusCode: 403, code: 'ErrorAccessDenied' } } });
     const res = await request(createApp(db, provider, async () => {})).post('/ops/list-events').set(AUTH).send({ connectionId, ...WINDOW });
     expect(res.body.error).toBe('provider_scope_missing');
   });
@@ -184,5 +184,55 @@ describe('a mail 403 is unchanged by the calendar scope mapping', () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('connection_unauthorized');
     expect((await db.connection.findUniqueOrThrow({ where: { id: connectionId } })).status).toBe('ERROR');
+  });
+});
+
+describe('403 on a calendar op: only an access-denied code is a missing scope', () => {
+  it.each([['ErrorInformationBarrier'], [undefined]])('answers provider_forbidden for code %s and leaves the connection ACTIVE', async (code) => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider({ failWith: { methods: ['listCalendarView'], error: { statusCode: 403, code } } });
+    const res = await request(createApp(db, provider, async () => {})).post('/ops/list-events').set(AUTH).send({ connectionId, ...WINDOW });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('provider_forbidden');
+    expect((await db.connection.findUniqueOrThrow({ where: { id: connectionId } })).status).toBe('ACTIVE');
+  });
+
+  it.each([['Authorization_RequestDenied'], ['AccessDenied']])('treats %s as a missing scope', async (code) => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider({ failWith: { methods: ['getSchedule'], error: { statusCode: 403, code } } });
+    const res = await request(createApp(db, provider, async () => {})).post('/ops/get-schedule').set(AUTH).send({ connectionId, ...WINDOW });
+    expect(res.body.error).toBe('provider_scope_missing');
+  });
+});
+
+describe('schedule ids', () => {
+  it('treats Primary in any case as the mailbox and refuses a non-address', async () => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider();
+    await request(createApp(db, provider, async () => {})).post('/ops/get-schedule').set(AUTH).send({ connectionId, ...WINDOW, schedules: ['Primary'] }).expect(200);
+    expect(provider.calls[0][1][1]).toEqual(['prof@example.edu']);
+    const bad = await request(createApp(db, fakeProvider(), async () => {})).post('/ops/get-schedule').set(AUTH).send({ connectionId, ...WINDOW, schedules: ['not an address'] });
+    expect(bad.status).toBe(400);
+  });
+});
+
+describe('all-day events (P2-1)', () => {
+  it('uses the event\'s own local dates, not the UTC rendering, east of UTC', async () => {
+    const connectionId = await seedConnection();
+    const provider = fakeProvider();
+    provider.listCalendarView = async () => ({
+      data: [
+        // 2026-12-02 all day in UTC+10: Graph with the UTC Prefer header says 2026-12-01T14:00Z.
+        graphEvent({
+          id: 'east', isAllDay: true,
+          start: { dateTime: '2026-12-01T14:00:00.0000000', timeZone: 'UTC' },
+          end: { dateTime: '2026-12-02T14:00:00.0000000', timeZone: 'UTC' },
+          allDayStartDate: '2026-12-02', allDayEndDate: '2026-12-03',
+        }),
+      ],
+    });
+    const res = await request(createApp(db, provider, async () => {})).post('/ops/list-events').set(AUTH).send({ connectionId, ...WINDOW });
+    expect(res.body.events[0].start).toEqual({ dateTime: null, date: '2026-12-02', timeZone: null });
+    expect(res.body.events[0].end.date).toBe('2026-12-03');
   });
 });

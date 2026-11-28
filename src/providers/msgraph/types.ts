@@ -82,6 +82,9 @@ export interface GraphEvent {
   seriesMasterId?: string | null;
   createdDateTime?: string | null;
   lastModifiedDateTime?: string | null;
+  /** All-day events only: the event's own local calendar dates (YYYY-MM-DD, end exclusive), set by the provider from a second, un-converted read. */
+  allDayStartDate?: string;
+  allDayEndDate?: string;
 }
 
 /** One entry of Graph's getSchedule answer. Items carry a status and times; the SDK may also return subjects, which the ops layer never reads. */

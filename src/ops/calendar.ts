@@ -6,6 +6,7 @@
  * without Graph.
  */
 import { z } from 'zod';
+import { ProviderUnavailableError } from '../errors.js';
 import type { GraphEvent, GraphScheduleInfo } from '../providers/msgraph/types.js';
 
 /**
@@ -45,7 +46,9 @@ export function checkWindow(v: { start: string; end: string }, ctx: z.Refinement
 }
 
 export const topSchema = z.number().int().min(1).max(MAX_TOP).optional();
-export const schedulesSchema = z.array(z.string().min(1)).min(1).max(MAX_SCHEDULES).default(['primary']);
+/** An address, or the neutral alias `primary` (any case) for the connection's own calendar. */
+const scheduleId = z.string().min(1).refine((v) => v.toLowerCase() === 'primary' || v.includes('@'), 'a schedule is an email address or primary');
+export const schedulesSchema = z.array(scheduleId).min(1).max(MAX_SCHEDULES).default(['primary']);
 
 /** UTC ISO instant (Z) for an RFC 3339 input. */
 export function toUtcIso(v: string): string {
@@ -54,10 +57,13 @@ export function toUtcIso(v: string): string {
 
 /** Graph UTC dateTime (7 fractional digits, no Z) → ISO with Z. */
 function graphUtc(dt: string): string {
-  return new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(dt) ? dt : `${dt}Z`).toISOString();
+  const d = new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(dt) ? dt : `${dt}Z`);
+  // A malformed provider timestamp is a provider fault, not an opaque RangeError.
+  if (Number.isNaN(d.getTime())) throw new ProviderUnavailableError();
+  return d.toISOString();
 }
 
-/** Statuses that make a schedule item "busy": everything but free and working-elsewhere. */
+/** A whitelist: only these Graph statuses are busy. free, workingElsewhere and unknown are not. */
 const BUSY_STATUSES = new Set(['busy', 'tentative', 'oof']);
 
 /**
@@ -90,9 +96,9 @@ function response(r: string | undefined): EventResponse {
   return 'none';
 }
 
-function boundary(t: { dateTime: string }, allDay: boolean) {
+function boundary(t: { dateTime: string }, allDay: boolean, localDate?: string) {
   return allDay
-    ? { dateTime: null, date: t.dateTime.slice(0, 10), timeZone: null }
+    ? { dateTime: null, date: localDate ?? t.dateTime.slice(0, 10), timeZone: null }
     : { dateTime: graphUtc(t.dateTime), date: null, timeZone: 'UTC' };
 }
 
@@ -105,8 +111,8 @@ export function normalizeEvent(e: GraphEvent) {
     title: e.subject ?? null,
     description: e.bodyPreview ?? null,
     location: e.location?.displayName || null,
-    start: boundary(e.start, allDay),
-    end: boundary(e.end, allDay),
+    start: boundary(e.start, allDay, e.allDayStartDate),
+    end: boundary(e.end, allDay, e.allDayEndDate),
     isAllDay: allDay,
     status: e.isCancelled ? ('cancelled' as const) : e.showAs === 'tentative' ? ('tentative' as const) : ('confirmed' as const),
     organizer: e.organizer?.emailAddress
