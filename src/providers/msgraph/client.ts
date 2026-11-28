@@ -15,7 +15,9 @@ import type {
   DraftInput,
   GraphCallResult,
   GraphFolder,
+  GraphEvent,
   GraphMessage,
+  GraphScheduleInfo,
   ListMessagesOptions,
   MessageFlag,
   MsGraphProvider,
@@ -185,6 +187,52 @@ export const msGraphProvider: MsGraphProvider = {
   async categorizeMessage(refreshToken, messageId, categories) {
     return withToken(refreshToken, async (client) => {
       await client.api(`/me/messages/${messageId}`).patch({ categories });
+    });
+  },
+
+  async getSchedule(refreshToken, schedules, start, end) {
+    return withToken(refreshToken, async (client) => {
+      const response = await client.api('/me/calendar/getSchedule').post({
+        schedules,
+        startTime: { dateTime: start.replace(/\.\d+Z$|Z$/, ''), timeZone: 'UTC' },
+        endTime: { dateTime: end.replace(/\.\d+Z$|Z$/, ''), timeZone: 'UTC' },
+      });
+      return response.value as GraphScheduleInfo[];
+    });
+  },
+
+  async listCalendarView(refreshToken, start, end, top) {
+    return withToken(refreshToken, async (client) => {
+      const response = await client
+        .api('/me/calendarView')
+        .query({ startDateTime: start, endDateTime: end })
+        .header('Prefer', 'outlook.timezone="UTC"')
+        .top(top)
+        .orderby('start/dateTime')
+        .get();
+      const events = response.value as GraphEvent[];
+      // With the UTC Prefer header an all-day event comes back as a UTC instant
+      // (midnight in its own zone, converted), which is the wrong calendar date
+      // east of UTC. Read the same view WITHOUT the header: an all-day event is
+      // then midnight in its own zone, and its date is the first ten characters.
+      if (events.some((e) => e.isAllDay)) {
+        const local = await client
+          .api('/me/calendarView')
+          .query({ startDateTime: start, endDateTime: end })
+          .select(['id', 'isAllDay', 'start', 'end'])
+          .top(top)
+          .orderby('start/dateTime')
+          .get();
+        const dates = new Map<string, GraphEvent>((local.value as GraphEvent[]).map((e) => [e.id, e]));
+        for (const e of events) {
+          const l = e.isAllDay ? dates.get(e.id) : undefined;
+          if (l) {
+            e.allDayStartDate = l.start.dateTime.slice(0, 10);
+            e.allDayEndDate = l.end.dateTime.slice(0, 10);
+          }
+        }
+      }
+      return events;
     });
   },
 
